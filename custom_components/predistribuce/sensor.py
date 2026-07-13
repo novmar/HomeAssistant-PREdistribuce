@@ -7,6 +7,7 @@ import logging
 from homeassistant.components.sensor import SensorEntity, SensorStateClass
 from homeassistant.const import ATTR_UNIT_OF_MEASUREMENT, UnitOfPower, UnitOfTime
 from homeassistant.core import Event, EventStateChangedData, HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.util.unit_conversion import PowerConverter
@@ -159,7 +160,10 @@ class PreNaklady(PreEntity, SensorEntity):
             return value
         try:
             return PowerConverter.convert(value, unit, UnitOfPower.WATT)
-        except (ValueError, TypeError):
+        except (HomeAssistantError, ValueError, TypeError):
+            # PowerConverter hází HomeAssistantError, ne ValueError. Bez toho by výjimka
+            # proletěla ven z available/native_value uvnitř callbacku, místo aby entita
+            # jen zešedla — třeba u senzoru ve VA nebo kVA.
             _LOGGER.warning(
                 "Senzor %s hlásí jednotku %r, kterou neumím převést na watty.",
                 self._power_entity,

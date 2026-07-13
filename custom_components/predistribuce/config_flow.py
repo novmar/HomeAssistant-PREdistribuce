@@ -95,7 +95,10 @@ class PreDistribuceConfigFlow(ConfigFlow, domain=DOMAIN):
             except PreError:
                 errors["base"] = "cannot_connect"
 
-        if user_input is not None and not errors:
+        # Pozor na `user_input is not None`: když se seznam povelů nepodařilo stáhnout,
+        # vykreslí se formulář bez schématu a HA při odeslání pošle prázdný dict, ne None.
+        # Havarovalo by tedy právě to, co má být cestou ven z chyby.
+        if user_input and self._povely and not errors:
             povel = user_input[CONF_POVEL]
             await self.async_set_unique_id(f"{DOMAIN}_{povel}")
             self._abort_if_unique_id_configured()

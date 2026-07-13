@@ -44,9 +44,25 @@ class PreHdoCoordinator(DataUpdateCoordinator[HdoState]):
         self._backoff = RETRY_BACKOFF_START
 
     async def _async_fetch(self, den: date) -> list[Window]:
-        """Vrátí okna pro daný den, pokud možno z cache."""
+        """Vrátí okna pro daný den, pokud možno z cache.
+
+        `PreNoData` znamená, že PRE pro ten den rozvrh nemá — buď je za horizontem
+        (zveřejňuje se zhruba dva týdny dopředu), nebo povel ten den prostě nespíná
+        (třeba 586 spíná jen o víkendu). To je platná odpověď: nízký tarif ten den
+        neběží. Ukládá se do cache stejně jako rozvrh — bez toho bychom se na
+        neexistující den doptávali každou minutu znovu.
+        """
         if den not in self._cache:
-            self._cache[den] = await self._client.async_get_nt_windows(self._povel, den)
+            try:
+                windows = await self._client.async_get_nt_windows(self._povel, den)
+            except PreNoData:
+                _LOGGER.info(
+                    "PRE nemá rozvrh povelu %s pro %s — beru to jako den bez nízkého tarifu.",
+                    self._povel,
+                    den,
+                )
+                windows = []
+            self._cache[den] = windows
             self._cache = {
                 d: w for d, w in self._cache.items() if d >= den - timedelta(days=1)
             }
@@ -65,18 +81,16 @@ class PreHdoCoordinator(DataUpdateCoordinator[HdoState]):
         have_today = today in self._cache
         waiting = self._retry_after is not None and now < self._retry_after
 
-        if not have_today and waiting:
-            raise UpdateFailed(
-                f"Čekám na další pokus o stažení rozvrhu (do {self._retry_after:%H:%M:%S})."
-            )
-
         if not have_today:
+            if waiting:
+                raise UpdateFailed(
+                    f"Čekám na další pokus o stažení rozvrhu (do {self._retry_after:%H:%M:%S})."
+                )
             try:
                 await self._async_fetch(today)
-            except PreNoData as err:
-                self._note_failure(now)
-                raise UpdateFailed(str(err)) from err
             except PreError as err:
+                # Sem se dostaneme, jen když odpovědi nerozumíme. Tipovat tarif by znamenalo
+                # tiše účtovat špatnou cenu, tak raději přiznáme, že nevíme.
                 self._note_failure(now)
                 raise UpdateFailed(str(err)) from err
             self._retry_after = None
@@ -84,16 +98,12 @@ class PreHdoCoordinator(DataUpdateCoordinator[HdoState]):
 
         # Zítřek potřebujeme jen kvůli oknu přes půlnoc. Když nedorazí, počítáme bez něj —
         # to je o poznání lepší než shodit i dnešek, který máme v ruce.
-        tomorrow_windows: list[Window] = []
-        if not waiting:
+        tomorrow_windows: list[Window] = self._cache.get(tomorrow, [])
+        if tomorrow not in self._cache and not waiting:
             try:
                 tomorrow_windows = await self._async_fetch(tomorrow)
-            except PreNoData:
-                _LOGGER.debug("PRE zatím nemá rozvrh na %s, počítám bez něj.", tomorrow)
             except PreError as err:
                 _LOGGER.warning("Rozvrh na zítřek se nepodařilo stáhnout: %s", err)
                 self._note_failure(now)
-        else:
-            tomorrow_windows = self._cache.get(tomorrow, [])
 
         return compute_state(self._cache[today], tomorrow_windows, now)
