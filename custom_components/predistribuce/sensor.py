@@ -1,131 +1,162 @@
-__version__ = "1.0"
+"""Senzory — čas do přepnutí tarifu, aktuální cena a co to právě teď stojí."""
 
-import math
-import logging
-import voluptuous as vol
-from datetime import timedelta, datetime, date
-from homeassistant.components.sensor import PLATFORM_SCHEMA
-import homeassistant.helpers.config_validation as cv
-from homeassistant.helpers.entity import Entity
-from homeassistant.util import Throttle
+from __future__ import annotations
 
-import requests
-from lxml import html, etree
+from homeassistant.components.sensor import SensorEntity, SensorStateClass
+from homeassistant.const import UnitOfTime
+from homeassistant.core import Event, EventStateChangedData, HomeAssistant, callback
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.event import async_track_state_change_event
 
-MIN_TIME_BETWEEN_SCANS = timedelta(seconds=3600)
-_LOGGER = logging.getLogger(__name__)
+from . import PreConfigEntry
+from .const import CONF_CENA_NT, CONF_CENA_VT, CONF_POWER_SENSOR
+from .entity import PreEntity
 
-DOMAIN = "predistribuce"
-CONF_CMD = "receiver_command_id"
-CONF_PERIODS = "periods"
-CONF_NAME = "name"
-CONF_MINUTES = "minutes"
-
-PERIOD_SCHEMA = vol.Schema(
-    {
-        vol.Required(CONF_NAME): cv.string,
-        vol.Required(CONF_MINUTES): vol.All(vol.Coerce(int), vol.Range(min=1, max=300))
-    }
-)
-
-PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
-    {
-        vol.Required(CONF_CMD): cv.string,
-        vol.Optional(CONF_PERIODS): vol.All(cv.ensure_list, [PERIOD_SCHEMA])
-    }
-)
+CURRENCY_PER_KWH = "CZK/kWh"
 
 
-def setup_platform(hass, config, add_entities, discovery_info=None):
-    conf_cmd = config.get(CONF_CMD)
-    ents = []
-    ents.append(PreDistribuce(conf_cmd, 0, "HDO čas do nízkého tarifu"))
-    add_entities(ents)
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: PreConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    coordinator = entry.runtime_data
+    entities: list[SensorEntity] = [
+        PreMinutyDoNT(coordinator, entry),
+        PreMinutyDoVT(coordinator, entry),
+        PreCena(coordinator, entry),
+    ]
 
-class PreDistribuce(Entity):
+    # Náklady umíme spočítat, jen když víme, kolik se právě teď odebírá.
+    if entry.options.get(CONF_POWER_SENSOR):
+        entities += [
+            PreNaklady(coordinator, entry, per_minute=False),
+            PreNaklady(coordinator, entry, per_minute=True),
+        ]
 
-    def __init__(self, conf_cmd, minutes, name):
-        """Initialize the sensor."""
-        self.conf_cmd = conf_cmd
-        self.minutes = minutes
-        self._name = name
-        self.timeToNT = 0
-        self.html = "<div><i>Není spojení</i></div>"
-        self.tree = ""
-        self.update()
+    async_add_entities(entities)
+
+
+class PreMinutyDoNT(PreEntity, SensorEntity):
+    """Za jak dlouho začne nízký tarif (0 = běží)."""
+
+    _attr_name = "Minut do nízkého tarifu"
+    _attr_native_unit_of_measurement = UnitOfTime.MINUTES
+    _attr_icon = "mdi:timer-sand"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator, entry) -> None:
+        super().__init__(coordinator, entry, "minut_do_nt")
 
     @property
-    def name(self):
-        """Return name of the sensor."""
-        return self._name
+    def native_value(self) -> int | None:
+        return self.coordinator.data.minutes_to_nt
+
+
+class PreMinutyDoVT(PreEntity, SensorEntity):
+    """Za jak dlouho nízký tarif skončí (0 = neběží)."""
+
+    _attr_name = "Minut do vysokého tarifu"
+    _attr_native_unit_of_measurement = UnitOfTime.MINUTES
+    _attr_icon = "mdi:timer-sand-complete"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator, entry) -> None:
+        super().__init__(coordinator, entry, "minut_do_vt")
 
     @property
-    def unit_of_measurement(self):
-        return "minut"
+    def native_value(self) -> int | None:
+        return self.coordinator.data.minutes_to_vt
+
+
+class PreCena(PreEntity, SensorEntity):
+    """Cena za kWh podle právě běžícího tarifu."""
+
+    _attr_name = "Cena elektřiny"
+    _attr_native_unit_of_measurement = CURRENCY_PER_KWH
+    _attr_icon = "mdi:cash"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_suggested_display_precision = 2
+
+    def __init__(self, coordinator, entry) -> None:
+        super().__init__(coordinator, entry, "cena")
+        self._entry = entry
 
     @property
-    def icon(self):
-        return "mdi:av-timer"
+    def native_value(self) -> float:
+        options = self._entry.options
+        if self.coordinator.data.is_nt:
+            return float(options[CONF_CENA_NT])
+        return float(options[CONF_CENA_VT])
 
     @property
-    def state(self):
-        """Return time to wait until low tariff."""
-        hdoNizkyVysoky = self.tree.xpath('//div[@id="component-hdo-dnes"]/div[@class="hdo-bar"]/span[starts-with(@class, "hdo")]/@class')
-        hdoCasyCitelne = self.tree.xpath('//div[@id="component-hdo-dnes"]/div/span[@class="span-overflow"]/@title')
-        hdoNizkyVysoky = [ x[3].upper() for x in hdoNizkyVysoky ]
-        hdoCasyZacatky = [ x[0:5].upper() for x in hdoCasyCitelne ]
+    def extra_state_attributes(self) -> dict[str, object]:
+        return {
+            "tarif": "NT" if self.coordinator.data.is_nt else "VT",
+            "cena_vt": self._entry.options[CONF_CENA_VT],
+            "cena_nt": self._entry.options[CONF_CENA_NT],
+        }
 
-        time_now = datetime.now().time()
-        hdoTed = hdoNizkyVysoky[:1][0]
-        idxTed = len(hdoNizkyVysoky)-1
-        for idx,t in enumerate(hdoCasyZacatky, start=0):
-            time_start = datetime.strptime(t, '%H:%M').time()
-            if time_now < time_start:
-                hdoTed = hdoNizkyVysoky[idx - 1]
-                idxTed = idx
-                break
 
-        zacne = datetime.strptime(hdoCasyZacatky[idxTed], '%H:%M').time()
-        zbyvaMinut = (datetime.combine(date.today(), zacne) - datetime.combine(date.today(), time_now)).seconds / 60
-        if hdoTed == 'N':
-            self.timeToNT = 0
-            self.timetoVT = zbyvaMinut
-        else:
-            self.timeToNT = zbyvaMinut
-            self.timetoVT = 0
+class PreNaklady(PreEntity, SensorEntity):
+    """Kolik stojí aktuální odběr — za hodinu, nebo za minutu."""
 
-        return math.floor(self.timeToNT)
+    _attr_icon = "mdi:cash-clock"
+    _attr_state_class = SensorStateClass.MEASUREMENT
 
+    def __init__(self, coordinator, entry, per_minute: bool) -> None:
+        super().__init__(
+            coordinator, entry, "naklady_za_minutu" if per_minute else "naklady_za_hodinu"
+        )
+        self._entry = entry
+        self._per_minute = per_minute
+        self._power_entity = entry.options[CONF_POWER_SENSOR]
+        self._attr_name = (
+            "Náklady za minutu" if per_minute else "Náklady za hodinu"
+        )
+        self._attr_native_unit_of_measurement = "CZK/min" if per_minute else "CZK/h"
+        self._attr_suggested_display_precision = 4 if per_minute else 2
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        # Bez tohohle by se náklady přepočítaly až s coordinatorem, tedy jednou za minutu —
+        # a skok v odběru by se na dashboardu objevil se zpožděním.
+        self.async_on_remove(
+            async_track_state_change_event(
+                self.hass, [self._power_entity], self._handle_power_change
+            )
+        )
+
+    @callback
+    def _handle_power_change(self, event: Event[EventStateChangedData]) -> None:
+        self.async_write_ha_state()
 
     @property
-    def extra_state_attributes(self):
-        attributes = {}
-        attributes['HDO čas do vysokého tarifu'] = math.floor(self.timetoVT)
-        return attributes
-
-    @property
-    def should_poll(self):
+    def available(self) -> bool:
+        if not super().available:
+            return False
+        state = self.hass.states.get(self._power_entity)
+        if state is None:
+            return False
+        try:
+            float(state.state)
+        except (TypeError, ValueError):
+            return False
         return True
 
     @property
-    def available(self):
-        """Return if entity is available."""
-        return self.last_update_success
+    def native_value(self) -> float | None:
+        state = self.hass.states.get(self._power_entity)
+        if state is None:
+            return None
+        try:
+            watts = float(state.state)
+        except (TypeError, ValueError):
+            return None
 
-    @property
-    def device_class(self):
-        return 'plug'
-
-    # TODO make default sensor (minutes=0) responsible for fetching, storing tree and html as static global variables
-    @Throttle(MIN_TIME_BETWEEN_SCANS)
-    def update(self):
-        """Update the entity by scraping website"""
-        today = date.today()
-        page = requests.get("https://www.predistribuce.cz/cs/potrebuji-zaridit/zakaznici/stav-hdo/?povel={3}&den_od={0}&mesic_od={1}&rok_od={2}&den_do={0}&mesic_do={1}&rok_do={2}".format(today.day,today.month,today.year,self.conf_cmd))
-        if page.status_code == 200:
-            self.tree = html.fromstring(page.content)
-            self.html = etree.tostring(self.tree.xpath('//div[@id="component-hdo-dnes"]')[0]).decode("utf-8").replace('\n', '').replace('\t', '').replace('"/>', '"></span>')
-            #_LOGGER.warn("UPDATING POST {}".format(self.html))
-            self.last_update_success = True
-        else:
-            self.last_update_success = False
+        options = self._entry.options
+        cena = float(
+            options[CONF_CENA_NT] if self.coordinator.data.is_nt else options[CONF_CENA_VT]
+        )
+        za_hodinu = watts / 1000 * cena
+        return round(za_hodinu / 60, 4) if self._per_minute else round(za_hodinu, 2)

@@ -1,0 +1,51 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "PRE Distribuce – HDO",
+        "description": "Vyberte povel svého HDO přijímače. Kód najdete na štítku přijímače u elektroměru (např. K1: 490) nebo v portálu Můj PRE.",
+        "data": {
+          "povel": "Povel HDO přijímače",
+          "cena_vt": "Cena ve vysokém tarifu",
+          "cena_nt": "Cena v nízkém tarifu",
+          "power_sensor": "Senzor příkonu (volitelné)"
+        },
+        "data_description": {
+          "cena_vt": "Konečná cena za kWh včetně distribuce a DPH.",
+          "cena_nt": "Konečná cena za kWh včetně distribuce a DPH.",
+          "power_sensor": "Zvolíte-li senzor příkonu, přibudou entity s aktuálními náklady (Kč/h a Kč/min)."
+        }
+      }
+    },
+    "abort": {
+      "cannot_connect": "Nepodařilo se načíst seznam povelů z webu PREdistribuce.",
+      "already_configured": "Tento povel už je nastavený."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Nastavení",
+        "data": {
+          "cena_vt": "Cena ve vysokém tarifu",
+          "cena_nt": "Cena v nízkém tarifu",
+          "power_sensor": "Senzor příkonu (volitelné)",
+          "periods": "Hlídané délky nízkého tarifu"
+        },
+        "data_description": {
+          "periods": "Čárkou oddělené minuty, např. 30, 90, 180. Pro každou vznikne senzor, který je zapnutý, jen když nízký tarif vydrží aspoň tak dlouho – hodí se pro spouštění spotřebičů."
+        }
+      }
+    },
+    "error": {
+      "invalid_periods": "Zadejte čísla oddělená čárkou, např. 30, 90, 180."
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "nizky_tarif": {
+        "name": "Nízký tarif"
+      }
+    }
+  }
+}

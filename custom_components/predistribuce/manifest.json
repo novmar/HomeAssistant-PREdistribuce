@@ -1,10 +1,13 @@
 {
     "domain": "predistribuce",
     "name": "PRE Distribuce",
-    "documentation": "https://github.com/slesinger/HomeAssistant-PREdistribuce",
-    "issue_tracker": "https://github.com/slesinger/HomeAssistant-PREdistribuce/issues",
+    "documentation": "https://github.com/novmar/HomeAssistant-PREdistribuce",
+    "issue_tracker": "https://github.com/novmar/HomeAssistant-PREdistribuce/issues",
+    "codeowners": ["@novmar"],
+    "config_flow": true,
     "dependencies": [],
-    "codeowners": ["@slesinger"],
-    "version": "1.0.1",
-    "requirements": ["lxml==5.3.0"]
+    "integration_type": "service",
+    "iot_class": "cloud_polling",
+    "requirements": [],
+    "version": "2.0.0"
 }
