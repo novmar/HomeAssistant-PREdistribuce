@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "PRE Distribuce – HDO",
-        "description": "Select your HDO receiver command code. You can find it on the receiver label next to your meter (e.g. K1: 490) or in the Můj PRE portal.",
+        "description": "Select the command code of your HDO receiver. You can find it on the receiver label next to your meter (e.g. K1: 490) or in the Můj PRE portal.",
         "data": {
           "povel": "HDO receiver command",
           "cena_vt": "High tariff price",
@@ -13,12 +13,14 @@
         "data_description": {
           "cena_vt": "Final price per kWh including distribution and VAT.",
           "cena_nt": "Final price per kWh including distribution and VAT.",
-          "power_sensor": "If set, entities with current cost (CZK/h and CZK/min) are added."
+          "power_sensor": "If set, sensors with the current cost (CZK/h and CZK/min) are added."
         }
       }
     },
+    "error": {
+      "cannot_connect": "Could not load the command list from the PREdistribuce website."
+    },
     "abort": {
-      "cannot_connect": "Could not load the command list from the PREdistribuce website.",
       "already_configured": "This command code is already configured."
     }
   },
@@ -33,7 +35,7 @@
           "periods": "Watched low-tariff durations"
         },
         "data_description": {
-          "periods": "Comma-separated minutes, e.g. 30, 90, 180. Each creates a sensor that is on only while the low tariff will last at least that long – useful for starting appliances."
+          "periods": "Comma-separated minutes, e.g. 30, 90, 180. Each creates a sensor that is on only while the low tariff is running and will last at least that long – useful for starting appliances."
         }
       }
     },
@@ -43,9 +45,15 @@
   },
   "entity": {
     "binary_sensor": {
-      "nizky_tarif": {
-        "name": "Low tariff"
-      }
+      "nizky_tarif": { "name": "Low tariff" },
+      "nizky_tarif_vydrzi": { "name": "Low tariff ≥ {minutes} min" }
+    },
+    "sensor": {
+      "minut_do_nt": { "name": "Minutes to low tariff" },
+      "minut_do_vt": { "name": "Minutes to high tariff" },
+      "cena": { "name": "Electricity price" },
+      "naklady_za_hodinu": { "name": "Cost per hour" },
+      "naklady_za_minutu": { "name": "Cost per minute" }
     }
   }
 }

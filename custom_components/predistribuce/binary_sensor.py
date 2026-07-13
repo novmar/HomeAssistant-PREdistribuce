@@ -2,17 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-
-from homeassistant.components.binary_sensor import (
-    BinarySensorEntity,
-    BinarySensorEntityDescription,
-)
+from homeassistant.components.binary_sensor import BinarySensorEntity
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import PreConfigEntry
 from .const import CONF_PERIODS
+from .coordinator import PreHdoCoordinator
 from .entity import PreEntity
 
 
@@ -22,9 +18,7 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     coordinator = entry.runtime_data
-    entities: list[BinarySensorEntity] = [
-        PreNizkyTarif(coordinator, entry),
-    ]
+    entities: list[BinarySensorEntity] = [PreNizkyTarif(coordinator, entry)]
     # Pro každou hlídanou délku vznikne senzor, který je zapnutý jen tehdy, když nízký
     # tarif vydrží aspoň tak dlouho. Přesně to potřebuje automatizace, která chce
     # spustit spotřebič a nechat ho doběhnout ještě v NT.
@@ -38,13 +32,10 @@ async def async_setup_entry(
 class PreNizkyTarif(PreEntity, BinarySensorEntity):
     """Běží právě teď nízký tarif?"""
 
-    entity_description = BinarySensorEntityDescription(
-        key="nizky_tarif",
-        translation_key="nizky_tarif",
-        icon="mdi:transmission-tower",
-    )
+    _attr_translation_key = "nizky_tarif"
+    _attr_icon = "mdi:transmission-tower"
 
-    def __init__(self, coordinator, entry) -> None:
+    def __init__(self, coordinator: PreHdoCoordinator, entry: PreConfigEntry) -> None:
         super().__init__(coordinator, entry, "nizky_tarif")
 
     @property
@@ -67,12 +58,15 @@ class PreNizkyTarif(PreEntity, BinarySensorEntity):
 class PreNizkyTarifVydrzi(PreEntity, BinarySensorEntity):
     """Běží nízký tarif a vydrží ještě aspoň N minut?"""
 
+    _attr_translation_key = "nizky_tarif_vydrzi"
     _attr_icon = "mdi:timer-check-outline"
 
-    def __init__(self, coordinator, entry, minutes: int) -> None:
+    def __init__(
+        self, coordinator: PreHdoCoordinator, entry: PreConfigEntry, minutes: int
+    ) -> None:
         super().__init__(coordinator, entry, f"nt_min_{minutes}")
         self._minutes = minutes
-        self._attr_name = f"Nízký tarif ≥ {minutes} min"
+        self._attr_translation_placeholders = {"minutes": str(minutes)}
 
     @property
     def is_on(self) -> bool | None:

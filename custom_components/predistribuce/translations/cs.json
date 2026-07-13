@@ -17,8 +17,10 @@
         }
       }
     },
+    "error": {
+      "cannot_connect": "Nepodařilo se načíst seznam povelů z webu PREdistribuce."
+    },
     "abort": {
-      "cannot_connect": "Nepodařilo se načíst seznam povelů z webu PREdistribuce.",
       "already_configured": "Tento povel už je nastavený."
     }
   },
@@ -33,7 +35,7 @@
           "periods": "Hlídané délky nízkého tarifu"
         },
         "data_description": {
-          "periods": "Čárkou oddělené minuty, např. 30, 90, 180. Pro každou vznikne senzor, který je zapnutý, jen když nízký tarif vydrží aspoň tak dlouho – hodí se pro spouštění spotřebičů."
+          "periods": "Čárkou oddělené minuty, např. 30, 90, 180. Pro každou vznikne senzor, který je zapnutý, jen když nízký tarif běží a vydrží aspoň tak dlouho – hodí se pro spouštění spotřebičů."
         }
       }
     },
@@ -43,9 +45,15 @@
   },
   "entity": {
     "binary_sensor": {
-      "nizky_tarif": {
-        "name": "Nízký tarif"
-      }
+      "nizky_tarif": { "name": "Nízký tarif" },
+      "nizky_tarif_vydrzi": { "name": "Nízký tarif ≥ {minutes} min" }
+    },
+    "sensor": {
+      "minut_do_nt": { "name": "Minut do nízkého tarifu" },
+      "minut_do_vt": { "name": "Minut do vysokého tarifu" },
+      "cena": { "name": "Cena elektřiny" },
+      "naklady_za_hodinu": { "name": "Náklady za hodinu" },
+      "naklady_za_minutu": { "name": "Náklady za minutu" }
     }
   }
 }

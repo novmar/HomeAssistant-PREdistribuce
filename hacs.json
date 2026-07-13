@@ -1,7 +1,6 @@
 {
     "name": "PRE Distribuce CZ",
     "render_readme": true,
-    "domains": ["binary_sensor", "sensor"],
     "country": "CZ",
     "homeassistant": "2024.12.0"
 }

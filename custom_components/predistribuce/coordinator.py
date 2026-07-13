@@ -3,104 +3,97 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util import dt as dt_util
 
-from .const import DOMAIN, UPDATE_INTERVAL
-from .pre_client import PreClient, PreError
+from .const import CONF_POVEL, DOMAIN, RETRY_BACKOFF_MAX, RETRY_BACKOFF_START, UPDATE_INTERVAL
+from .parser import PreError, PreNoData, Window
+from .pre_client import PreClient
+from .state import HdoState, compute_state
 
 _LOGGER = logging.getLogger(__name__)
-
-MINUTES_PER_DAY = 24 * 60
-
-
-@dataclass(frozen=True)
-class HdoState:
-    """Stav HDO v daném okamžiku."""
-
-    is_nt: bool
-    minutes_to_nt: int | None
-    """Za kolik minut začne nízký tarif. 0 pokud už běží."""
-    minutes_to_vt: int | None
-    """Za kolik minut nízký tarif skončí. 0 pokud neběží."""
-    windows_today: list[tuple[int, int]]
 
 
 class PreHdoCoordinator(DataUpdateCoordinator[HdoState]):
     """Drží rozvrh HDO a každou minutu z něj dopočítá aktuální stav.
 
     Rozvrh se během dne nemění, takže ho stahujeme jen při změně dne. Tahá se i zítřek,
-    aby šlo správně spočítat zbývající čas u okna, které přechází přes půlnoc.
+    aby šlo správně spočítat okno přecházející přes půlnoc — ale zítřek je nepovinný:
+    PRE zveřejňuje data jen zhruba dva týdny dopředu a občas vypadne, a to nesmí shodit
+    dnešek, který už máme.
     """
 
-    def __init__(self, hass: HomeAssistant, client: PreClient, povel: str) -> None:
+    def __init__(
+        self, hass: HomeAssistant, entry: ConfigEntry, client: PreClient
+    ) -> None:
         super().__init__(
             hass,
             _LOGGER,
-            name=f"{DOMAIN} {povel}",
+            config_entry=entry,
+            name=f"{DOMAIN} {entry.data[CONF_POVEL]}",
             update_interval=UPDATE_INTERVAL,
         )
         self._client = client
-        self._povel = povel
-        self._cache: dict[date, list[tuple[int, int]]] = {}
+        self._povel = entry.data[CONF_POVEL]
+        self._cache: dict[date, list[Window]] = {}
+        self._retry_after: datetime | None = None
+        self._backoff = RETRY_BACKOFF_START
 
-    async def _async_windows(self, den: date) -> list[tuple[int, int]]:
+    async def _async_fetch(self, den: date) -> list[Window]:
+        """Vrátí okna pro daný den, pokud možno z cache."""
         if den not in self._cache:
             self._cache[den] = await self._client.async_get_nt_windows(self._povel, den)
-            # Starší dny už nepotřebujeme.
             self._cache = {
                 d: w for d, w in self._cache.items() if d >= den - timedelta(days=1)
             }
         return self._cache[den]
 
+    def _note_failure(self, now: datetime) -> None:
+        """Po neúspěchu couvneme, ať nebušíme na cizí web každou minutu."""
+        self._retry_after = now + timedelta(seconds=self._backoff)
+        self._backoff = min(self._backoff * 2, RETRY_BACKOFF_MAX)
+
     async def _async_update_data(self) -> HdoState:
-        now = datetime.now()
+        now = dt_util.now()
         today = now.date()
+        tomorrow = today + timedelta(days=1)
 
-        try:
-            today_windows = await self._async_windows(today)
-            tomorrow_windows = await self._async_windows(today + timedelta(days=1))
-        except PreError as err:
-            raise UpdateFailed(str(err)) from err
+        have_today = today in self._cache
+        waiting = self._retry_after is not None and now < self._retry_after
 
-        # Okna zítřka posuneme o den, ať se dá počítat v jedné ose. Okno, které končí
-        # o půlnoci a zítra hned pokračuje, spojíme — jinak bychom hlásili konec NT
-        # o půlnoci, i když ve skutečnosti běží dál.
-        timeline = list(today_windows)
-        timeline += [
-            (start + MINUTES_PER_DAY, end + MINUTES_PER_DAY)
-            for start, end in tomorrow_windows
-        ]
-        merged: list[tuple[int, int]] = []
-        for start, end in timeline:
-            if merged and merged[-1][1] == start:
-                merged[-1] = (merged[-1][0], end)
-            else:
-                merged.append((start, end))
+        if not have_today and waiting:
+            raise UpdateFailed(
+                f"Čekám na další pokus o stažení rozvrhu (do {self._retry_after:%H:%M:%S})."
+            )
 
-        now_minutes = now.hour * 60 + now.minute
+        if not have_today:
+            try:
+                await self._async_fetch(today)
+            except PreNoData as err:
+                self._note_failure(now)
+                raise UpdateFailed(str(err)) from err
+            except PreError as err:
+                self._note_failure(now)
+                raise UpdateFailed(str(err)) from err
+            self._retry_after = None
+            self._backoff = RETRY_BACKOFF_START
 
-        is_nt = False
-        minutes_to_nt: int | None = None
-        minutes_to_vt: int | None = None
-
-        for start, end in merged:
-            if start <= now_minutes < end:
-                is_nt = True
-                minutes_to_nt = 0
-                minutes_to_vt = end - now_minutes
-                break
+        # Zítřek potřebujeme jen kvůli oknu přes půlnoc. Když nedorazí, počítáme bez něj —
+        # to je o poznání lepší než shodit i dnešek, který máme v ruce.
+        tomorrow_windows: list[Window] = []
+        if not waiting:
+            try:
+                tomorrow_windows = await self._async_fetch(tomorrow)
+            except PreNoData:
+                _LOGGER.debug("PRE zatím nemá rozvrh na %s, počítám bez něj.", tomorrow)
+            except PreError as err:
+                _LOGGER.warning("Rozvrh na zítřek se nepodařilo stáhnout: %s", err)
+                self._note_failure(now)
         else:
-            upcoming = [start for start, _ in merged if start > now_minutes]
-            minutes_to_vt = 0
-            minutes_to_nt = min(upcoming) - now_minutes if upcoming else None
+            tomorrow_windows = self._cache.get(tomorrow, [])
 
-        return HdoState(
-            is_nt=is_nt,
-            minutes_to_nt=minutes_to_nt,
-            minutes_to_vt=minutes_to_vt,
-            windows_today=today_windows,
-        )
+        return compute_state(self._cache[today], tomorrow_windows, now)

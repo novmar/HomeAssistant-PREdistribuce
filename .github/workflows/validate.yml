@@ -1,0 +1,34 @@
+name: Validace
+
+on:
+  push:
+  pull_request:
+  schedule:
+    # Parser visí na cizím HTML, které se může změnit bez varování. Týdenní běh to odhalí
+    # dřív, než si někdo všimne, že mu integrace tiše účtuje vysoký tarif.
+    - cron: "0 4 * * 1"
+
+jobs:
+  testy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install pytest
+      - run: pytest -q
+
+  hassfest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: home-assistant/actions/hassfest@master
+
+  hacs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hacs/action@main
+        with:
+          category: integration

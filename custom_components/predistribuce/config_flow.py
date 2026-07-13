@@ -41,15 +41,27 @@ from .pre_client import PreClient, PreError
 def _cena_selector() -> NumberSelector:
     return NumberSelector(
         NumberSelectorConfig(
-            min=0, max=50, step=0.001, mode=NumberSelectorMode.BOX, unit_of_measurement="CZK/kWh"
+            min=0,
+            max=50,
+            step=0.001,
+            mode=NumberSelectorMode.BOX,
+            unit_of_measurement="CZK/kWh",
         )
     )
 
 
-def _parse_periods(raw: str | None) -> list[int]:
-    """Rozparsuje '30, 90, 180' na [30, 90, 180]. Prázdné hodnoty ignoruje."""
+def _power_selector() -> EntitySelector:
+    return EntitySelector(
+        EntitySelectorConfig(domain="sensor", device_class="power")
+    )
+
+
+def parse_periods(raw: str | list[int] | None) -> list[int]:
+    """Rozparsuje '30, 90, 180' na [30, 90, 180]. Vyčleněno kvůli testovatelnosti."""
     if not raw:
         return []
+    if isinstance(raw, list):
+        return sorted({int(x) for x in raw})
     out: list[int] = []
     for chunk in str(raw).replace(";", ",").split(","):
         chunk = chunk.strip()
@@ -66,18 +78,24 @@ class PreDistribuceConfigFlow(ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
+    def __init__(self) -> None:
+        self._povely: dict[str, str] | None = None
+
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         errors: dict[str, str] = {}
-        client = PreClient(async_get_clientsession(self.hass))
 
-        try:
-            povely = await client.async_get_povel_list()
-        except PreError:
-            return self.async_abort(reason="cannot_connect")
+        # Seznam povelů stahujeme jen kvůli vykreslení formuláře. Kdyby se tahal i při
+        # odeslání, jeden timeout z PRE by uživateli zahodil vyplněné hodnoty.
+        if self._povely is None:
+            client = PreClient(async_get_clientsession(self.hass))
+            try:
+                self._povely = await client.async_get_povel_list()
+            except PreError:
+                errors["base"] = "cannot_connect"
 
-        if user_input is not None:
+        if user_input is not None and not errors:
             povel = user_input[CONF_POVEL]
             await self.async_set_unique_id(f"{DOMAIN}_{povel}")
             self._abort_if_unique_id_configured()
@@ -92,22 +110,24 @@ class PreDistribuceConfigFlow(ConfigFlow, domain=DOMAIN):
                 },
             )
 
+        if self._povely is None:
+            # Bez seznamu povelů nemá formulář co nabídnout; ať to uživatel zkusí znovu.
+            return self.async_show_form(step_id="user", errors=errors)
+
         schema = vol.Schema(
             {
                 vol.Required(CONF_POVEL): SelectSelector(
                     SelectSelectorConfig(
                         options=[
                             {"value": code, "label": label}
-                            for code, label in sorted(povely.items())
+                            for code, label in sorted(self._povely.items())
                         ],
                         mode=SelectSelectorMode.DROPDOWN,
                     )
                 ),
                 vol.Required(CONF_CENA_VT, default=DEFAULT_CENA_VT): _cena_selector(),
                 vol.Required(CONF_CENA_NT, default=DEFAULT_CENA_NT): _cena_selector(),
-                vol.Optional(CONF_POWER_SENSOR): EntitySelector(
-                    EntitySelectorConfig(domain="sensor", device_class="power")
-                ),
+                vol.Optional(CONF_POWER_SENSOR): _power_selector(),
             }
         )
         return self.async_show_form(step_id="user", data_schema=schema, errors=errors)
@@ -129,7 +149,7 @@ class PreDistribuceOptionsFlow(OptionsFlow):
 
         if user_input is not None:
             try:
-                periods = _parse_periods(user_input.get(CONF_PERIODS))
+                periods = parse_periods(user_input.get(CONF_PERIODS))
             except ValueError:
                 errors[CONF_PERIODS] = "invalid_periods"
             else:
@@ -154,15 +174,11 @@ class PreDistribuceOptionsFlow(OptionsFlow):
                 vol.Optional(
                     CONF_POWER_SENSOR,
                     description={"suggested_value": options.get(CONF_POWER_SENSOR)},
-                ): EntitySelector(
-                    EntitySelectorConfig(domain="sensor", device_class="power")
-                ),
+                ): _power_selector(),
                 vol.Optional(
                     CONF_PERIODS,
                     description={"suggested_value": current_periods},
                 ): TextSelector(),
             }
         )
-        return self.async_show_form(
-            step_id="init", data_schema=schema, errors=errors
-        )
+        return self.async_show_form(step_id="init", data_schema=schema, errors=errors)

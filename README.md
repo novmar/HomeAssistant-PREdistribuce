@@ -13,12 +13,11 @@ volitelně i to, **kolik vás právě teď stojí odběr** (Kč/h a Kč/min).
   při upgradech Home Assistantu. Nová verze si vystačí se standardní knihovnou.
 - **Nastavení klikáním.** Povel se vybírá z nabídky, kterou integrace stáhne přímo z webu
   PRE. Žádné ruční editování `configuration.yaml`.
-- **Jedno stahování místo mnoha.** Rozvrh se stahuje jednou denně přes `DataUpdateCoordinator`,
-  ne zvlášť pro každou entitu.
+- **Jedno stahování denně.** Rozvrh drží `DataUpdateCoordinator` a sdílí ho všechny entity.
+  Při výpadku PRE se couvá (exponenciální backoff), ne že by se bušilo každou minutu.
 - **Asynchronně**, bez blokujících HTTP volání v event loopu.
 - **Cenové senzory** — cena za kWh podle aktuálního tarifu a náklady na aktuální odběr.
-- **Korektní přechod přes půlnoc.** Okno nízkého tarifu, které pokračuje do dalšího dne,
-  se počítá vcelku.
+- **Testy** na výpočet stavu i na parser, včetně přechodu přes půlnoc a změny času.
 
 ## Instalace
 
@@ -38,14 +37,17 @@ a porovnejte rozvrhy jednotlivých povelů s tím, kdy vám reálně spíná boj
 
 ## Entity
 
+Entity patří pod zařízení `HDO <povel>`, takže se jmenují například
+`binary_sensor.hdo_490_nizky_tarif`. Níže bez toho prefixu:
+
 | Entita | Popis |
 |---|---|
-| `binary_sensor.nizky_tarif` | Zapnuto, když běží nízký tarif. V atributech jsou dnešní okna NT. |
-| `sensor.minut_do_nizkeho_tarifu` | Za kolik minut začne nízký tarif (0 = běží). |
-| `sensor.minut_do_vysokeho_tarifu` | Za kolik minut nízký tarif skončí (0 = neběží). |
-| `sensor.cena_elektriny` | Cena za kWh podle právě běžícího tarifu. |
-| `sensor.naklady_za_hodinu` | Kolik stojí aktuální odběr. Jen když nastavíte senzor příkonu. |
-| `sensor.naklady_za_minutu` | Totéž po minutách. |
+| `binary_sensor…_nizky_tarif` | Zapnuto, když běží nízký tarif. V atributech jsou dnešní okna NT. |
+| `sensor…_minut_do_nizkeho_tarifu` | Za kolik minut začne nízký tarif (0 = běží). |
+| `sensor…_minut_do_vysokeho_tarifu` | Za kolik minut nízký tarif skončí (0 = neběží). |
+| `sensor…_cena_elektriny` | Cena za kWh podle právě běžícího tarifu. |
+| `sensor…_naklady_za_hodinu` | Kolik stojí aktuální odběr. Jen když nastavíte senzor příkonu. |
+| `sensor…_naklady_za_minutu` | Totéž po minutách. |
 
 ### Hlídané délky nízkého tarifu
 
@@ -59,7 +61,7 @@ automation:
   - alias: Pračka v nízkém tarifu
     triggers:
       - trigger: state
-        entity_id: binary_sensor.nizky_tarif_180_min
+        entity_id: binary_sensor.hdo_490_nizky_tarif_180_min
         to: "on"
     actions:
       - action: switch.turn_on
@@ -75,15 +77,25 @@ Spočítáte ji z faktury jako součet: silová elektřina + daň z elektřiny +
 
 Stálé měsíční platby (jistič, odběrné místo, OTE) do ceny za kWh nepatří — platí se tak jako tak.
 
+Senzor příkonu nemusí být ve wattech; kilowatty se převedou samy.
+
 ## Jak to funguje
 
 PRE nemá veřejné API. Stránka se stavem HDO si data dotahuje AJAXem z endpointu, který
 nevyžaduje přihlášení — integrace volá přímo ten a parsuje z odpovědi okna nízkého tarifu.
 
-Endpoint je nezdokumentovaný a PRE ho může kdykoli změnit. Integrace je proto psaná tak,
-aby při jakékoli odchylce **spadla do stavu `unavailable`** místo aby tipovala tarif —
-špatná cena, která vypadá správně, je horší než žádná.
+Endpoint je nezdokumentovaný a PRE ho může kdykoli změnit. Integrace proto **rozlišuje
+tři situace**:
+
+- rozvrh dorazil a rozumíme mu → počítáme,
+- PRE hlásí, že pro daný den data nemá (má horizont jen zhruba dva týdny dopředu, a některé
+  povely nespínají každý den) → normální stav, počítá se bez nich,
+- odpověď nevypadá jako rozvrh → entity jdou do `unavailable`.
+
+To poslední je záměr: **tiše tvrdit „dnes není nízký tarif" by znamenalo účtovat vysokou
+sazbu, aniž by cokoli vypadalo rozbitě.** Špatná cena, která vypadá správně, je horší než
+žádná.
 
 ## Licence
 
-MIT, stejně jako původní projekt.
+Apache 2.0, stejně jako původní projekt.
